@@ -1,29 +1,65 @@
 ﻿extends Node
-class_name EnvironmentManager
+## Weather, field surface, and atmosphere. Autoloaded as `EnvironmentManager`.
+## Everything here feeds real physics values: traction, grip, drag, ball flight.
 
-# Weather
+enum Surface { NATURAL_GRASS, TURF, WET, MUD, SNOW, ICE }
+enum Precipitation { NONE, RAIN, SNOW }
+
+const SURFACE_TRACTION := {
+	Surface.NATURAL_GRASS: 0.95,
+	Surface.TURF: 0.98,
+	Surface.WET: 0.82,
+	Surface.MUD: 0.68,
+	Surface.SNOW: 0.62,
+	Surface.ICE: 0.45,
+}
+
 var temperature_c: float = 15.0
-var wind_mps: Vector2 = Vector2.ZERO
-var precipitation: String = \"none\" # none, rain, snow
 var humidity: float = 0.5
+var wind: Vector3 = Vector3.ZERO
+var precipitation: Precipitation = Precipitation.NONE
 var visibility: float = 1.0
 var altitude_m: float = 0.0
 
-# Field
-var field_surface: String = \"natural_grass\" # natural_grass, turf, mud, wet, ice, snow
-var field_wetness: float = 0.0
-var field_traction: float = 1.0
+var surface: Surface = Surface.NATURAL_GRASS
+var wetness: float = 0.0
 
-func update_effects() -> void:
-	# Traction affected by weather/field
-	match field_surface:
-		\"turf\": field_traction = 0.98
-		\"natural_grass\": field_traction = 0.95
-		\"wet\": field_traction = 0.85
-		\"mud\": field_traction = 0.7
-		\"snow\": field_traction = 0.65
-		\"ice\": field_traction = 0.5
-		_: field_traction = 0.95
-	
-	if precipitation == \"rain\": field_wetness = clampf(field_wetness + 0.01, 0.0, 1.0)
-	if precipitation == \"snow\": pass
+## Multiplier applied to grip/friction in the physics step.
+var traction: float = 0.95
+## Multiplier applied to ball drag (thin air at altitude flies further).
+var air_density: float = 1.225
+## Wear added per play to the surface, making it progressively slicker.
+var surface_wear: float = 0.0
+
+func _ready() -> void:
+	recalculate()
+
+func recalculate() -> void:
+	traction = SURFACE_TRACTION[surface]
+	# Wetness and wear both reduce grip continuously, not in discrete steps.
+	traction *= clampf(1.0 - wetness * 0.35 - surface_wear * 0.4, 0.25, 1.0)
+	# Snow/ice hurt footing even when "dry".
+	if surface == Surface.SNOW:
+		traction *= 0.95
+	if surface == Surface.ICE:
+		traction *= 0.9
+
+	# Air density from altitude and temperature (ideal-gas, sea level baseline).
+	var temp_k := temperature_c + 273.15
+	var pressure_ratio := exp(-altitude_m / 8434.5)
+	air_density = 1.225 * pressure_ratio * (288.15 / temp_k)
+	air_density *= (1.0 - humidity * 0.01)
+
+	match precipitation:
+		Precipitation.RAIN:
+			wetness = minf(wetness + 0.08, 1.0)
+		Precipitation.SNOW:
+			wetness = minf(wetness + 0.04, 1.0)
+		Precipitation.NONE:
+			wetness = maxf(wetness - 0.02, 0.0)
+
+	visibility = clampf(1.0 - wetness * 0.1, 0.6, 1.0)
+
+func wear_surface(amount: float) -> void:
+	surface_wear = clampf(surface_wear + amount, 0.0, 1.0)
+	recalculate()
