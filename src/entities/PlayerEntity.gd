@@ -50,6 +50,7 @@ var _spin_sign: float = 1.0
 var _plant_timer: float = 0.0
 var _plant_cooldown: float = 0.0
 var _prev_move_dir: Vector3 = Vector3.ZERO
+@onready var _visual: Node3D = get_node_or_null("Visual") as Node3D
 
 func _ready() -> void:
 	if measurables == null:
@@ -99,6 +100,12 @@ func _physics_process(delta: float) -> void:
 	if travel.length() > 0.15:
 		var turn := deg_to_rad(measurables.turn_rate_deg * (0.6 if is_spinning else 1.0))
 		facing = facing.slerp(travel.normalized(), clampf(turn * delta, 0.0, 1.0))
+
+	# Point the visual body where the player is actually facing. This is purely
+	# presentational - the capsule is radially symmetric, so the greybox adds a
+	# shoulder bar and a ground chevron to make the front readable.
+	if _visual != null:
+		_visual.rotation.y = atan2(-facing.x, -facing.z)
 
 	# Physical cost of the effort actually exerted this frame.
 	var load := travel.length() / maxf(measurables.top_speed_mps, 0.1) * effort

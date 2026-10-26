@@ -9,6 +9,7 @@ const HINT_CONTROLLER := "No controller detected. Plug one in — Xbox, PlayStat
 @onready var readout: Label = $HUD/Readout
 @onready var hint: Label = $HUD/Hint
 @onready var mesh: MeshInstance3D = $Player/Visual/MeshInstance3D
+@onready var markings: FieldMarkings = $FieldMarkings
 
 var _cam_offset := Vector3(0.0, 5.5, 9.0)
 var _mat: StandardMaterial3D
@@ -19,6 +20,8 @@ var _last_cut_age := 99.0
 func _ready() -> void:
 	player.is_user_controlled = true
 	player.measurables.compute()
+	_fit_ground()
+	_build_player_markers()
 	_mat = StandardMaterial3D.new()
 	_mat.albedo_color = Color(0.85, 0.87, 0.92)
 	mesh.material_override = _mat
@@ -27,7 +30,102 @@ func _ready() -> void:
 	InputManager.device_changed.connect(func(_g, _c): _refresh_hint())
 	_refresh_hint()
 
+## Keep the visible turf, the collision slab and the painted lines in sync.
+## FieldMarkings owns the dimensions so there is one source of truth.
+func _fit_ground() -> void:
+	var plane := $Ground/MeshInstance3D.mesh as PlaneMesh
+	var shape := $Ground/CollisionShape3D.shape as BoxShape3D
+	if plane != null:
+		plane.size = Vector2(FieldMarkings.GROUND_WIDTH_M, FieldMarkings.GROUND_LENGTH_M)
+	if shape != null:
+		shape.size = Vector3(FieldMarkings.GROUND_WIDTH_M, 0.2, FieldMarkings.GROUND_LENGTH_M)
+
+## The capsule is symmetric, so orientation is invisible without help. Two cues:
+## a bright bar across the shoulders that turns with the body, and a chevron
+## floating above the head pointing at the front. The chevron is above the head
+## rather than on the ground because the chase cam looks down at a shallow angle
+## and the player's own body hides the ground at their feet.
+func _build_player_markers() -> void:
+	var visual := player.get_node_or_null("Visual") as Node3D
+	if visual == null:
+		return
+
+	var bar := MeshInstance3D.new()
+	bar.name = "ShoulderBar"
+	var box := BoxMesh.new()
+	box.size = Vector3(1.15, 0.18, 0.30)
+	bar.mesh = box
+	bar.position = Vector3(0.0, 0.42, 0.0)
+	var bar_mat := StandardMaterial3D.new()
+	bar_mat.albedo_color = Color(0.13, 0.17, 0.28)
+	bar_mat.roughness = 0.75
+	bar.material_override = bar_mat
+	visual.add_child(bar)
+
+	var marker := Node3D.new()
+	marker.name = "FacingMarker"
+	marker.position = Vector3(0.0, 1.45, 0.0)
+	# Tip the chevron toward the chase cam so it is not squashed to a sliver by
+	# the shallow view angle. It still points at the front of the player.
+	marker.rotation.x = deg_to_rad(22.0)
+	visual.add_child(marker)
+
+	# Dark backing so the chevron stays readable against bright turf.
+	var backing := MeshInstance3D.new()
+	backing.name = "Backing"
+	backing.mesh = _make_chevron_mesh()
+	backing.scale = Vector3(1.16, 1.0, 1.16)
+	backing.position = Vector3(0.0, -0.02, 0.0)
+	var backing_mat := StandardMaterial3D.new()
+	backing_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	backing_mat.albedo_color = Color(0.05, 0.07, 0.09)
+	backing_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	backing.material_override = backing_mat
+	marker.add_child(backing)
+
+	var arrow := MeshInstance3D.new()
+	arrow.name = "Chevron"
+	arrow.mesh = _make_chevron_mesh()
+	var arrow_mat := StandardMaterial3D.new()
+	arrow_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	arrow_mat.albedo_color = Color(1.0, 0.62, 0.15)
+	arrow_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	arrow.material_override = arrow_mat
+	marker.add_child(arrow)
+
+## Chevron pointing along -Z, which is the node's forward direction.
+func _make_chevron_mesh() -> ArrayMesh:
+	var tip := Vector3(0.0, 0.0, -1.05)
+	var notch := Vector3(0.0, 0.0, -0.25)
+	var back_left := Vector3(-0.75, 0.0, 0.55)
+	var back_right := Vector3(0.75, 0.0, 0.55)
+	var verts := PackedVector3Array([
+		tip, notch, back_left,
+		tip, back_right, notch,
+	])
+	var normals := PackedVector3Array()
+	normals.resize(verts.size())
+	normals.fill(Vector3.UP)
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	var built := ArrayMesh.new()
+	built.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return built
+
+func _unhandled_input(event: InputEvent) -> void:
+	var key := event as InputEventKey
+	if key != null and key.pressed and not key.echo and key.keycode == KEY_F1:
+		markings.toggle_grid()
+		get_viewport().set_input_as_handled()
+
 func _process(delta: float) -> void:
+	if player.global_position.y < -5.0:
+		# Fell off the world: put them back on the field instead of falling forever.
+		player.global_position = Vector3(0.0, 1.2, 36.576)
+		player.velocity = Vector3.ZERO
+
 	var focus := player.global_position
 	var desired := focus + _cam_offset
 	camera.global_position = camera.global_position.lerp(desired, clampf(delta * 6.0, 0.0, 1.0))
@@ -94,6 +192,10 @@ func _update_readout() -> void:
 		"",
 		"speed: %.1f mph   stamina: %.0f%%   traction: %.2f" % [player.speed_mph(), h.stamina * 100.0, EnvironmentManager.traction],
 		"state: %-9s %s   cuts: %d" % [state, cut_line, player.cuts_this_play],
+		"spot: %d-yard line   yard grid (F1): %s" % [
+			FieldMarkings.yard_line_at(player.global_position.z),
+			"on" if markings.is_grid_visible() else "off",
+		],
 		_device_line(),
 		"",
 		"try: sprint straight, then slam a hard left at full speed.",
