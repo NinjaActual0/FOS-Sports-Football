@@ -1,35 +1,8 @@
 ﻿extends Node
-## Health, fatigue, and injury state. Autoloaded as `HealthManager`.
-## These are continuous physical variables that scale a player's real output,
-## never a hidden "is he injured enough to fail this play" roll.
-
-class HealthState:
-	var stamina: float = 1.0          ## 0..1 energy available right now
-	var hydration: float = 1.0        ## 0..1 affects cramp risk and stamina regen
-	var soreness: float = 0.0         ## 0..1 accumulated wear
-	var injury_severity: float = 0.0  ## 0..1 0 = healthy, 1 = cannot play
-	var injury_part: String = ""
-
-	func _init(s: float = 1.0) -> void:
-		stamina = s
-
-	func performance_modifier() -> float:
-		## Output scales with what the body can actually produce.
-		var m := stamina
-		m *= lane(hydration, 0.55, 1.0)
-		m *= 1.0 - soreness * 0.30
-		m *= 1.0 - injury_severity * 0.85
-		return clampf(m, 0.25, 1.0)
-
-	func top_speed_modifier() -> float:
-		return lane(performance_modifier(), 0.55, 1.0)
-
-	func accel_modifier() -> float:
-		## Fatigue costs a burst more than it costs top-end speed.
-		return lane(performance_modifier(), 0.40, 1.0)
-
-	static func lane(value: float, lo: float, hi: float) -> float:
-		return clampf(value, lo, hi)
+## Health, fatigue, and injury bookkeeping. Autoloaded as `HealthManager`.
+##
+## The numbers here are continuous and physical. Output scales with what the
+## body can currently produce — there is no random failure roll anywhere.
 
 ## Per-player states keyed by a stable player id.
 var _states: Dictionary = {}
@@ -39,7 +12,10 @@ func get_state(player_id: String) -> HealthState:
 		_states[player_id] = HealthState.new()
 	return _states[player_id]
 
-## Apply the physical cost of one play.
+func reset() -> void:
+	_states.clear()
+
+## Apply the physical cost of one frame of effort.
 func exert(player_id: String, effort: float, dt: float) -> void:
 	var s := get_state(player_id)
 	s.stamina = maxf(s.stamina - effort * dt * 0.04, 0.0)

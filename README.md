@@ -31,8 +31,24 @@ The result of a down is whatever the physics of the objects on the field produce
 ## Status
 
 Early scaffold. A greybox sandbox is in place to prove out movement feel:
-measurables → acceleration, top speed, turn rate, and fatigue are all live and tunable
-from the inspector.
+measurables → acceleration, top speed, turn rate, cutting, and spinning are all live and
+tunable from the inspector.
+
+### Working now
+
+- Physics-derived movement from combine measurables (no outcome tables)
+- Cut/plant with real momentum loss based on angle, speed, agility, and traction
+- Spin move that preserves momentum but locks steering
+- Fatigue, hydration, soreness, and injury continuously scaling output
+- Weather/surface/altitude affecting traction and air density
+- Xbox, PlayStation, and keyboard input with automatic glyph switching
+
+### Next
+
+- Ball as a physics object, snap → dropback → throw
+- Timing/placement passing windows
+- Defender pursuit, tackling, and leverage
+- Play calling and coach mode
 
 ## Requirements
 
@@ -51,12 +67,17 @@ Or open `project.godot` in the Godot editor and press **F5**.
 
 ## Controls
 
+Default bindings follow the **classic Madden scheme**. See [docs/CONTROLS.md](docs/CONTROLS.md)
+for the full table and the planned passing/defense/pre-snap layouts.
+
 | Action | Keyboard / Mouse | Xbox | PlayStation |
 | --- | --- | --- | --- |
 | Move | WASD | Left stick / D-pad | Left stick / D-pad |
-| Sprint | Shift | B | Circle |
+| Sprint | Shift | RT | R2 |
+| Spin | Q | B | Circle |
+| Cut | sharp WASD change | sharp stick change | sharp stick change |
 | Pass | Left click | X | Square |
-| Tackle | F | Y | Triangle |
+| Tackle | F | A | Cross |
 | Pause | Esc | Start | Options |
 
 Glyphs swap automatically based on the last device used. Every action is remappable in

@@ -82,5 +82,18 @@ shape = SubResource("Shape_player")
 offset_left = 16.0
 offset_top = 12.0
 offset_right = 700.0
-offset_bottom = 260.0
+offset_bottom = 300.0
 theme_override_font_sizes/font_size = 15
+
+[node name="Hint" type="Label" parent="HUD"]
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -44.0
+offset_right = 900.0
+offset_bottom = -12.0
+grow_vertical = 0
+theme_override_font_sizes/font_size = 14
+theme_override_colors/font_color = Color(0.95, 0.78, 0.32, 1)
+text = "No controller detected. Plug one in — Xbox, PlayStation, and generic XInput pads all work."
