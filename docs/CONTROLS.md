@@ -80,7 +80,7 @@ see what the physics is doing; none of it is a game system:
 | Aid | What it is |
 | --- | --- |
 | Field markings | A real 120 x 53.3 yd field: 5-yard lines, 1-yard hash marks, mown stripes, painted numbers |
-| Rear chevron | Floats above the head and points where the player is facing |
+| Facing chevron | Floats above the head and points where the player is facing |
 | Shoulder bar | Turns with the body, so torso alignment is readable from any angle |
 | Spot readout | HUD line showing the nearest painted yard line |
 | F1 | Toggles a 1-yard reference grid over the field |
