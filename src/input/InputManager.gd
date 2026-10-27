@@ -15,6 +15,7 @@ const GLYPHS := {
 		"spin": "Q",
 		"juke": "J / L",
 		"hurdle": "Space",
+		"dive": "X",
 		"pass": "LMB",
 		"tackle": "F",
 	},
@@ -28,6 +29,7 @@ const GLYPHS := {
 		"tackle": "A",
 		"juke": "R-Stick",
 		"hurdle": "Y",
+		"dive": "X",
 		"cover_ball": "RB",
 	},
 	GlyphSet.PLAYSTATION: {
@@ -40,6 +42,7 @@ const GLYPHS := {
 		"tackle": "Cross",
 		"juke": "R-Stick",
 		"hurdle": "Triangle",
+		"dive": "Square",
 		"cover_ball": "R1",
 	},
 }

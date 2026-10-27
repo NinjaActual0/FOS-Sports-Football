@@ -18,6 +18,7 @@ var _last_cut_loss := 0.0
 var _last_cut_age := 99.0
 var _last_juke_age := 99.0
 var _last_jump_age := 99.0
+var _last_dive_age := 99.0
 
 func _ready() -> void:
 	player.is_user_controlled = true
@@ -31,6 +32,7 @@ func _ready() -> void:
 	player.spin_started.connect(_on_spin)
 	player.juke_performed.connect(_on_juke)
 	player.hurdled.connect(_on_hurdled)
+	player.dove.connect(_on_dove)
 	InputManager.device_changed.connect(func(_g, _c): _refresh_hint())
 	_refresh_hint()
 
@@ -137,11 +139,14 @@ func _process(delta: float) -> void:
 	_last_cut_age += delta
 	_last_juke_age += delta
 	_last_jump_age += delta
+	_last_dive_age += delta
 	_update_state_visual()
 	_update_readout()
 
 func _update_state_visual() -> void:
-	if player.is_airborne:
+	if player.dive_phase != PlayerEntity.DivePhase.NONE:
+		_mat.albedo_color = Color(0.98, 0.45, 0.32)
+	elif player.is_airborne:
 		_mat.albedo_color = Color(0.72, 0.80, 1.00)
 	elif player.is_landing:
 		_mat.albedo_color = Color(0.95, 0.62, 0.30)
@@ -167,6 +172,9 @@ func _on_juke(_direction: int) -> void:
 func _on_hurdled(_clearance: float) -> void:
 	_last_jump_age = 0.0
 
+func _on_dove(_distance: float) -> void:
+	_last_dive_age = 0.0
+
 func _refresh_hint() -> void:
 	hint.visible = not InputManager.has_gamepad()
 	if hint.visible:
@@ -191,7 +199,9 @@ func _update_readout() -> void:
 		cut_line = "cut: %.0f°   speed lost: %.1f mph" % [_last_cut, 0.0]
 
 	var state := "grounded"
-	if player.is_airborne:
+	if player.dive_phase != PlayerEntity.DivePhase.NONE:
+		state = ["", "DIVING", "SLIDING", "GET UP"][player.dive_phase]
+	elif player.is_airborne:
 		state = "AIRBORNE"
 	elif player.is_landing:
 		state = "LANDING"
@@ -212,14 +222,22 @@ func _update_readout() -> void:
 		jump_line = "jump: %.2f m clearance   %.2fs air   landing %.1f m/s" % [
 			player.last_jump_clearance, player.last_air_time, player.last_landing_impact]
 
+	var dive_line := "dive: —   (a dive buys reach, then takes your feet)"
+	if player.dive_phase != PlayerEntity.DivePhase.NONE:
+		dive_line = "dive: %.2f m so far   %s" % [player.dive_distance, state]
+	elif _last_dive_age < 5.0:
+		dive_line = "dive: %.2f m covered   (%.1f yd)" % [
+			player.last_dive_distance, player.last_dive_distance * 1.09361]
+
 	readout.text = "\n".join([
 		"FOS Sports Football — greybox",
-		"move %s    sprint %s    spin %s    juke %s    hurdle %s" % [
+		"move %s    sprint %s    spin %s    juke %s    hurdle %s    dive %s" % [
 			InputManager.glyph("move"),
 			InputManager.glyph("sprint"),
 			InputManager.glyph("spin"),
 			InputManager.glyph("juke"),
 			InputManager.glyph("hurdle"),
+			InputManager.glyph("dive"),
 		],
 		"",
 		"40: %.2fs   10-split: %.2fs   3-cone: %.2fs" % [m.forty_yard_s, m.ten_yard_split_s, m.three_cone_s],
@@ -229,6 +247,7 @@ func _update_readout() -> void:
 		"speed: %.1f mph   stamina: %.0f%%   traction: %.2f" % [player.speed_mph(), h.stamina * 100.0, EnvironmentManager.traction],
 		"state: %-9s %s   cuts: %d   juke: %s" % [state, cut_line, player.cuts_this_play, juke_line],
 		jump_line,
+		dive_line,
 		"spot: %d-yard line   yard grid (F1): %s" % [
 			FieldMarkings.yard_line_at(player.global_position.z),
 			"on" if markings.is_grid_visible() else "off",

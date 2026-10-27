@@ -22,6 +22,7 @@ signal spin_started(direction: int)
 signal juke_performed(direction: int)
 signal hurdled(clearance_m: float)
 signal landed(impact_mps: float, speed_lost: float)
+signal dove(distance_m: float)
 
 const CUT_ANGLE_DEG := 32.0
 const PLANT_TIME := 0.17
@@ -62,6 +63,22 @@ const HURDLE_LANDING_SPEED_COST := 0.035  ## drive lost per m/s of impact
 const HURDLE_COOLDOWN := 0.30
 const AIR_PITCH := 0.34                ## radians the body tilts forward in flight
 
+## Dive: leave your feet and go horizontal. The launch buys reach - you cover
+## more ground than running for the same beat - and the price is that you are not
+## a runner again until you are back on your feet. Nothing about it is a roll:
+## the slide is turf friction acting on the momentum you actually carried in.
+const DIVE_PUSH_MPS := 1.2             ## extra forward speed the push adds
+const DIVE_MIN_LAUNCH := 4.0           ## a dive from a standstill is still a lunge
+const DIVE_LIFT_MPS := 1.4             ## just enough to leave the ground
+const DIVE_SLIDE_FRICTION := 11.0      ## pads digging into turf
+const DIVE_SLIDE_MAX_TIME := 0.32
+const DIVE_SLIDE_END_SPEED := 2.5
+const DIVE_GETUP_TIME := 0.45
+const DIVE_GETUP_FRICTION := 30.0      ## hands plant, feet come back under you
+const DIVE_COOLDOWN := 0.20
+const DIVE_PITCH_RAD := 1.50           ## ~86 degrees: body flat, not head-first
+const DIVE_PITCH_RATE := 12.0
+
 @export var measurables: PlayerMeasurables
 @export var player_id: String = ""
 @export var is_user_controlled: bool = false
@@ -87,6 +104,12 @@ var last_landing_impact: float = 0.0
 var last_cut_angle: float = 0.0
 var cuts_this_play: int = 0
 
+## Dive phases. The body is on the ground for all of them; only AIR has it off.
+enum DivePhase { NONE, AIR, SLIDE, GETUP }
+var dive_phase: int = DivePhase.NONE
+var dive_distance: float = 0.0
+var last_dive_distance: float = 0.0
+
 var _spin_timer: float = 0.0
 var _spin_cooldown: float = 0.0
 var _spin_sign: float = 1.0
@@ -98,6 +121,16 @@ var _juke_cooldown: float = 0.0
 var _landing_timer: float = 0.0
 var _hurdle_cooldown: float = 0.0
 var _air_time: float = 0.0
+var _dive_pitch: float = 0.0
+var _dive_timer: float = 0.0
+var _dive_air_timer: float = 0.0
+var _dive_cooldown: float = 0.0
+var _dive_start_pos: Vector3 = Vector3.ZERO
+var _shape_node: CollisionShape3D
+var _stand_shape: Shape3D
+var _dive_shape: CapsuleShape3D
+var _dive_drop: float = 0.605
+var _stand_half: float = 0.925
 var _prev_move_dir: Vector3 = Vector3.ZERO
 @onready var _visual: Node3D = get_node_or_null("Visual") as Node3D
 
@@ -107,6 +140,23 @@ func _ready() -> void:
 	measurables.compute()
 	if player_id == "":
 		player_id = str(get_instance_id())
+
+	# Standing body is a tall capsule. Diving swaps in a short horizontal one so
+	# the body is genuinely low to the turf instead of standing upright through
+	# the dive. The origin never moves, so getting up cannot pop the body.
+	_shape_node = get_node_or_null("CollisionShape3D") as CollisionShape3D
+	if _shape_node != null:
+		_stand_shape = _shape_node.shape
+		var r := 0.32
+		var h := 1.85
+		if _stand_shape is CapsuleShape3D:
+			r = (_stand_shape as CapsuleShape3D).radius
+			h = (_stand_shape as CapsuleShape3D).height
+		_dive_shape = CapsuleShape3D.new()
+		_dive_shape.radius = r
+		_dive_shape.height = maxf(h * 0.84, r * 2.0)
+		_dive_drop = h * 0.5 - r
+		_stand_half = h * 0.5
 
 func _physics_process(delta: float) -> void:
 	var health := HealthManager.get_state(player_id) as HealthState
@@ -123,11 +173,14 @@ func _physics_process(delta: float) -> void:
 		wish *= JUKE_STEER_LOCK
 	if _landing_timer > 0.0:
 		wish *= HURDLE_LANDING_STEER
+	if dive_phase != DivePhase.NONE:
+		wish = Vector3.ZERO  # on the ground or in the air: nothing to steer with
 
 	_tick_timers(delta)
 	_handle_spin_input(delta, _self_velocity(), wish)
 	_handle_juke_input()
 	_handle_hurdle_input()
+	_handle_dive_input()
 
 	# Derive the force budget AFTER the timers and the move inputs, so a juke that
 	# just fired is already subtracted out of the budget it was paid from.
@@ -135,8 +188,11 @@ func _physics_process(delta: float) -> void:
 	var current := _self_velocity()
 	var speed := current.length()
 
+	# ---- Dive: all of your momentum, none of your control -----------------
+	if dive_phase != DivePhase.NONE:
+		current = _resolve_dive(current, delta)
 	# ---- Spin: momentum is preserved, steering is not --------------------
-	if is_spinning:
+	elif is_spinning:
 		var spin_rate := (PI * 1.15) / SPIN_DURATION * _spin_sign
 		current = current.rotated(Vector3.UP, spin_rate * delta)
 		# Friction on a single planted foot is worse than two.
@@ -161,6 +217,7 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 	_update_air_state(was_on_floor, fall_speed, delta)
+	_update_dive(delta)
 
 	# Lean the body into travel. Turn rate comes from agility (3-cone/shuttle).
 	# Facing chases the feet, not the juke slide: a juke is supposed to keep your
@@ -180,9 +237,17 @@ func _physics_process(delta: float) -> void:
 	if _visual != null:
 		_visual.rotation.y = atan2(-facing.x, -facing.z)
 		_visual.rotation.z = -lean * MAX_LEAN
-		_visual.rotation.x = -air_pitch * AIR_PITCH
+		# Two things can tip the body: a hurdle's forward lean, or a dive that
+		# puts it flat. They never stack - the larger pose wins.
+		var hurdle_pitch := air_pitch * AIR_PITCH
+		var dive_angle := _dive_pitch * DIVE_PITCH_RAD
+		_visual.rotation.x = -maxf(hurdle_pitch, dive_angle)
+		# A body lying down has its centre only a radius off the turf, so the mesh
+		# drops as it tips. Without this the capsule hovers through the slide.
+		_visual.position = Vector3(0.0, _dive_visual_drop(dive_angle), 0.0)
 		# Tuck: the mesh compresses toward its own centre, so the feet come up.
-		_visual.scale = Vector3(1.0, lerpf(1.0, 0.90, air_pitch), 1.0)
+		var tuck := 1.0 if dive_phase != DivePhase.NONE else lerpf(1.0, 0.90, air_pitch)
+		_visual.scale = Vector3(1.0, tuck, 1.0)
 
 	# Physical cost of the effort actually exerted this frame.
 	var load := travel.length() / maxf(measurables.top_speed_mps, 0.1) * effort
@@ -270,6 +335,8 @@ func _begin_cut(angle: float, agility: float, traction: float) -> void:
 func _handle_spin_input(delta: float, current: Vector3, wish: Vector3) -> void:
 	if _spin_cooldown > 0.0 or is_spinning or not is_on_floor():
 		return
+	if dive_phase != DivePhase.NONE:
+		return
 	if not Input.is_action_just_pressed("spin"):
 		return
 	var speed := current.length()
@@ -306,6 +373,8 @@ func _tick_timers(delta: float) -> void:
 		_juke_cooldown -= delta
 	if _hurdle_cooldown > 0.0:
 		_hurdle_cooldown -= delta
+	if _dive_cooldown > 0.0:
+		_dive_cooldown -= delta
 	if _landing_timer > 0.0:
 		_landing_timer -= delta
 		if _landing_timer <= 0.0:
@@ -354,7 +423,7 @@ func _handle_juke_input() -> void:
 func perform_juke(direction: int) -> bool:
 	if direction == 0 or is_spinning or is_juking or is_landing:
 		return false
-	if _juke_cooldown > 0.0 or not is_on_floor():
+	if _juke_cooldown > 0.0 or not is_on_floor() or dive_phase != DivePhase.NONE:
 		return false
 
 	var carried := Vector3(velocity.x - _juke_vel.x, 0.0, velocity.z - _juke_vel.z)
@@ -393,7 +462,7 @@ func _handle_hurdle_input() -> void:
 ## leap is a real impulse, so clearing a diving arm is decided by your clearance
 ## versus his height and by where the two of you actually are when he arrives.
 func perform_hurdle() -> bool:
-	if not is_on_floor() or is_spinning or is_landing:
+	if not is_on_floor() or is_spinning or is_landing or dive_phase != DivePhase.NONE:
 		return false
 	if _hurdle_cooldown > 0.0:
 		return false
@@ -423,7 +492,8 @@ func _update_air_state(was_on_floor: bool, fall_speed: float, delta: float) -> v
 		if not was_on_floor:
 			last_air_time = _air_time
 			_air_time = 0.0
-			if fall_speed > 0.8:
+			# A dive's touchdown is not a landing: the slide already prices it.
+			if fall_speed > 0.8 and dive_phase == DivePhase.NONE:
 				_land(fall_speed)
 		air_pitch = lerpf(air_pitch, 0.0, clampf(delta * 14.0, 0.0, 1.0))
 	else:
@@ -439,6 +509,121 @@ func _land(impact: float) -> void:
 		HURDLE_LANDING_BASE, 0.35)
 	is_landing = true
 	landed.emit(impact, cost)
+
+func _handle_dive_input() -> void:
+	if not is_user_controlled:
+		return
+	if Input.is_action_just_pressed("dive"):
+		perform_dive()
+
+## Leave your feet. Public for the same reason the juke is: a defender's dive
+## tackle has to be the identical move, not a separate animation.
+##
+## The launch buys reach - you cover more ground than running for the same beat -
+## and the price is that you are not a runner again until you are standing up.
+func perform_dive() -> bool:
+	if not is_on_floor() or is_spinning or is_landing:
+		return false
+	if dive_phase != DivePhase.NONE or _dive_cooldown > 0.0:
+		return false
+
+	var base := Vector3(velocity.x, 0.0, velocity.z)
+	var speed := base.length()
+	var dir := base.normalized() if speed > 0.5 else facing
+	if dir.length_squared() < 0.0001:
+		dir = Vector3.FORWARD
+
+	# The juke burst is folded into the drive: from here on it is turf friction,
+	# not the juke decay, that scrubs the momentum.
+	_juke_vel = Vector3.ZERO
+	var launch := maxf(speed + DIVE_PUSH_MPS, DIVE_MIN_LAUNCH)
+	velocity.x = dir.x * launch
+	velocity.z = dir.z * launch
+	velocity.y = DIVE_LIFT_MPS
+
+	_plant_timer = 0.0
+	is_planting = false
+	air_pitch = 0.0
+	_dive_pitch = 0.0
+	_dive_timer = 0.0
+	_dive_air_timer = 0.0
+	_dive_start_pos = global_position
+	dive_phase = DivePhase.AIR
+	_set_dive_shape(true)
+	return true
+
+## Swap the tall standing capsule for a short horizontal one. The body origin is
+## left exactly where it is, so standing back up can never pop it out of the turf.
+func _set_dive_shape(active: bool) -> void:
+	if _shape_node == null or _stand_shape == null:
+		return
+	if active and _dive_shape != null:
+		_shape_node.shape = _dive_shape
+		_shape_node.position = Vector3(0.0, -_dive_drop, 0.0)
+		_update_dive_shape_yaw()
+	else:
+		_shape_node.shape = _stand_shape
+		_shape_node.position = Vector3.ZERO
+		_shape_node.rotation = Vector3.ZERO
+
+func _update_dive_shape_yaw() -> void:
+	if _shape_node == null:
+		return
+	# Lie along the direction of travel, not along world Z.
+	_shape_node.rotation = Vector3(PI * 0.5, atan2(-facing.x, -facing.z), 0.0)
+
+## How far the visual mesh has to drop for the tipped capsule's lowest point to
+## stay on the turf. Zero standing, -(half height - radius) when flat.
+func _dive_visual_drop(angle: float) -> float:
+	if _dive_shape == null:
+		return 0.0
+	return _stand_half * cos(angle) + _dive_shape.radius * sin(angle) - _stand_half
+
+func _update_dive(delta: float) -> void:
+	if dive_phase == DivePhase.NONE:
+		dive_distance = 0.0
+		return
+
+	dive_distance = Vector2(
+		global_position.x - _dive_start_pos.x,
+		global_position.z - _dive_start_pos.z).length()
+	_dive_timer += delta
+
+	var target_pitch := 1.0
+	match dive_phase:
+		DivePhase.AIR:
+			_dive_air_timer += delta
+			# Wait out the launch so the body is not "on the floor" on frame one.
+			if is_on_floor() and _dive_air_timer > 0.04:
+				dive_phase = DivePhase.SLIDE
+				_dive_timer = 0.0
+		DivePhase.SLIDE:
+			_update_dive_shape_yaw()
+			if _dive_timer > DIVE_SLIDE_MAX_TIME \
+					or _self_velocity().length() < DIVE_SLIDE_END_SPEED:
+				dive_phase = DivePhase.GETUP
+				_dive_timer = 0.0
+		DivePhase.GETUP:
+			target_pitch = 0.0
+			if _dive_timer >= DIVE_GETUP_TIME:
+				_finish_dive()
+
+	_dive_pitch = lerpf(_dive_pitch, target_pitch, clampf(delta * DIVE_PITCH_RATE, 0.0, 1.0))
+
+func _finish_dive() -> void:
+	_set_dive_shape(false)
+	dive_phase = DivePhase.NONE
+	_dive_cooldown = DIVE_COOLDOWN
+	_dive_pitch = 0.0
+	last_dive_distance = dive_distance
+	dove.emit(last_dive_distance)
+
+func _resolve_dive(current: Vector3, delta: float) -> Vector3:
+	# Airborne there is nothing to push against, so the arc is pure momentum.
+	if dive_phase == DivePhase.AIR:
+		return current
+	var friction := DIVE_GETUP_FRICTION if dive_phase == DivePhase.GETUP else DIVE_SLIDE_FRICTION
+	return current.move_toward(Vector3.ZERO, friction * EnvironmentManager.traction * delta)
 
 ## Roll the body toward the direction the feet are actually sliding.
 func _update_lean(travel: Vector3, max_speed: float, delta: float) -> void:

@@ -26,7 +26,7 @@ uses world-space vectors and never needs this conversion.
 | Cut / plant | Left stick, sharp | Left stick, sharp | WASD, sharp | Done (emergent) |
 | Juke | Right stick L/R | Right stick L/R | J / L | Done |
 | Stiff arm | A | Cross | — | Planned |
-| Dive | X | Square | — | Planned |
+| Dive | X | Square | X | Done |
 | Hurdle | Y | Triangle | Space | Done |
 | Cover ball | RB | R1 | — | Planned |
 | Lateral | LB | L1 | — | Planned |
@@ -75,6 +75,30 @@ loss both scale with downward speed. A short hop on the run is nearly free; a lo
 flat is not. Nothing checks whether a defender was in the way — clearing a diving arm is
 decided by your real clearance against his real height at the moment he arrives.
 
+### Dive
+
+The dive is the first move that changes the *shape* of the body. Standing is a tall capsule; diving
+swaps in a short horizontal one, so the body is genuinely low and genuinely long instead of a
+standing capsule tipped over. The origin never moves — the collision shape is offset instead — so
+standing back up can never pop the player out of the turf.
+
+The launch is momentum plus a push, with a floor so that a dive from a standstill is still a
+lunge. In the air there is no control at all: the arc is whatever you left with. Touchdown is not
+a landing; the slide is priced by turf friction acting on the momentum you actually carried in,
+which is why a dive at full speed covers far less ground than running would over the same beat.
+
+Then you get up. That is the cost, and it is the whole cost: roughly a second from takeoff to
+being a runner again at full speed, and about four fifths of a second from a jog, during which
+juke, spin, hurdle and dive are all refused. Nothing about the outcome is rolled — a dive tackle
+lands because the defender's body reached yours, not because a check passed.
+
+Reach is real geometry: the downed body extends about 0.45 m further forward than the standing
+capsule, so the last half-yard at the goal line is decided by the shape, not by a bonus.
+
+The same `perform_dive()` will be the defensive dive tackle. The button is shared with the
+quarterback slide in the passing set — both are "go to ground now", and which one you get is
+resolved by what the player is holding.
+
 ## Quarterback / passing (planned)
 
 | Action | Xbox | PlayStation | Keyboard |
@@ -94,7 +118,7 @@ trajectory, lead, and whether the window is actually open come from physics.
 | Move | Left stick | Left stick | WASD |
 | Sprint | RT | R2 | Shift |
 | Tackle | A | Cross | F |
-| Dive | X | Square | — |
+| Dive | X | Square | X |
 | Swat | X | Square | — |
 | Intercept | Y | Triangle | — |
 | Switch player | B | Circle | — |
