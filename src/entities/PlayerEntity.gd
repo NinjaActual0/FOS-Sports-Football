@@ -36,7 +36,7 @@ const SPIN_LATERAL_LOCK := 0.15
 const JUKE_COOLDOWN := 0.55
 const JUKE_DURATION := 0.28
 const JUKE_MIN_SPEED_FRAC := 0.35
-const JUKE_BASE_MPS := 3.4
+const JUKE_BASE_MPS := 3.55
 const JUKE_DECAY_MPS2 := 7.0
 const JUKE_FORWARD_COST := 0.94
 const JUKE_STEER_LOCK := 0.35
@@ -282,10 +282,17 @@ func _tick_timers(delta: float) -> void:
 func _handle_juke_input() -> void:
 	if not is_user_controlled or is_spinning:
 		return
-	if Input.is_action_just_pressed("juke_left"):
-		perform_juke(-1)
-	elif Input.is_action_just_pressed("juke_right"):
-		perform_juke(1)
+	# The stick is screen-relative but the push is body-relative, so translate.
+	# Facing the camera would otherwise flip your jukes left for right.
+	var body_right := facing.cross(Vector3.UP)
+	if body_right.length_squared() < 0.0001:
+		return
+	var screen_right := _input_right()
+	var side := 1.0 if screen_right.dot(body_right.normalized()) >= 0.0 else -1.0
+	if Input.is_action_just_pressed("juke_right"):
+		perform_juke(int(side))
+	elif Input.is_action_just_pressed("juke_left"):
+		perform_juke(int(-side))
 
 ## Push off the outside foot. Public because AI, coach mode and sim must all use
 ## the same move the player does. Returns false when the body could not do it.
@@ -333,8 +340,28 @@ func _update_lean(travel: Vector3, max_speed: float, delta: float) -> void:
 
 func _read_input() -> Vector3:
 	var v := Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
-	var dir := Vector3(v.x, 0.0, v.y)
+	# Input is screen-relative, not world-relative: "right" must mean right on
+	# screen no matter which way the body or the camera happens to be pointing.
+	var dir := _input_right() * v.x + _input_forward() * (-v.y)
 	return dir.limit_length(1.0)
+
+## Ground-projected camera basis. Falls back to world axes when there is no
+## camera (headless tests, sim-only runs).
+func _input_right() -> Vector3:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return Vector3.RIGHT
+	var r := cam.global_transform.basis.x
+	r.y = 0.0
+	return r.normalized() if r.length_squared() > 0.0001 else Vector3.RIGHT
+
+func _input_forward() -> Vector3:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return Vector3.FORWARD
+	var f := -cam.global_transform.basis.z
+	f.y = 0.0
+	return f.normalized() if f.length_squared() > 0.0001 else Vector3.FORWARD
 
 ## Speed readout in mph, used by the debug HUD.
 func speed_mph() -> float:

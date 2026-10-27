@@ -9,6 +9,13 @@ alternative schemes (including our own) can layer on later.
 The important part: **the control scheme is only a mapping.** Cuts and spins are physics
 events, not button-triggered animation states.
 
+**Input is screen-relative, not body-relative.** Pushing the stick right moves the player
+right *on screen*, whichever way the body happens to be facing. The same rule applies to the
+right stick: a right flick jukes to screen-right, even if the player is running at the camera
+and its own right shoulder is pointing the other way. Stick input is projected through the
+active camera, so this stays true once the camera becomes adjustable. Anything the AI drives
+uses world-space vectors and never needs this conversion.
+
 ## Ball carrier
 
 | Action | Xbox | PlayStation | Keyboard | Status |
