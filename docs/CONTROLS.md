@@ -27,7 +27,7 @@ uses world-space vectors and never needs this conversion.
 | Juke | Right stick L/R | Right stick L/R | J / L | Done |
 | Stiff arm | A | Cross | — | Planned |
 | Dive | X | Square | — | Planned |
-| Hurdle | Y | Triangle | — | Planned |
+| Hurdle | Y | Triangle | Space | Done |
 | Cover ball | RB | R1 | — | Planned |
 | Lateral | LB | L1 | — | Planned |
 
@@ -58,6 +58,22 @@ That makes it a real choice: juke into open space and you gained a step; juke in
 and you burned a beat. The physical size of the push comes from agility, and eventually the
 *deception* comes from defenders having to read your lean and momentum rather than your
 destination.
+
+### Hurdle
+
+The hurdle is the most committal move in the set, and that is the point. The vertical impulse
+is derived from the vertical jump measurement — a run only converts about half of your
+standing power into height, the rest goes into keeping your speed — so clearance is a body
+property, not a button roll.
+
+Once the feet leave the turf there is no plant, no cut, no brake, and no juke or spin. Your
+line is decided at takeoff. Air control is a fifth of ground acceleration, which is enough to
+drift a yard and nowhere near enough to turn.
+
+Landing is priced by the impact you actually carried into the turf: absorption time and drive
+loss both scale with downward speed. A short hop on the run is nearly free; a long jump landed
+flat is not. Nothing checks whether a defender was in the way — clearing a diving arm is
+decided by your real clearance against his real height at the moment he arrives.
 
 ## Quarterback / passing (planned)
 

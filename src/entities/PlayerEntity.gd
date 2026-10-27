@@ -20,6 +20,8 @@ extends CharacterBody3D
 signal cut_performed(angle_deg: float, speed_lost: float)
 signal spin_started(direction: int)
 signal juke_performed(direction: int)
+signal hurdled(clearance_m: float)
+signal landed(impact_mps: float, speed_lost: float)
 
 const CUT_ANGLE_DEG := 32.0
 const PLANT_TIME := 0.17
@@ -45,6 +47,21 @@ const JUKE_STEER_LOCK := 0.35
 const MAX_LEAN := 0.30
 const LEAN_RESPONSE := 9.0
 
+## Hurdle: a leap you commit your whole body to. The vertical impulse comes from
+## the vertical jump measurement, but a running hurdle only converts part of that
+## standing power into height - the rest goes into keeping your speed. Once the
+## feet leave the turf nothing may be planted or cut, so the whole jump is a
+## commitment measured in metres travelled, not in a dice roll.
+const HURDLE_CLEARANCE_SCALE := 0.53   ## share of standing vertical usable at a run
+const HURDLE_DRIVE_COST := 0.97        ## the plant costs a little drive
+const HURDLE_AIR_STEER := 0.20         ## fraction of ground acceleration available airborne
+const HURDLE_LANDING_STEER := 0.45
+const HURDLE_LANDING_BASE := 0.10      ## seconds of absorption, minimum
+const HURDLE_LANDING_PER_MPS := 0.030  ## extra absorption per m/s of impact
+const HURDLE_LANDING_SPEED_COST := 0.035  ## drive lost per m/s of impact
+const HURDLE_COOLDOWN := 0.30
+const AIR_PITCH := 0.34                ## radians the body tilts forward in flight
+
 @export var measurables: PlayerMeasurables
 @export var player_id: String = ""
 @export var is_user_controlled: bool = false
@@ -60,7 +77,13 @@ var is_planting: bool = false
 var plant_charge: float = 1.0       ## how well the foot is set during a cut
 var is_juking: bool = false
 var last_juke_direction: int = 0    ## -1 left, +1 right
+var is_airborne: bool = false
+var is_landing: bool = false
 var lean: float = 0.0               ## -1 = rolled left, +1 = rolled right
+var air_pitch: float = 0.0          ## 0 = upright, 1 = fully tucked
+var last_jump_clearance: float = 0.0
+var last_air_time: float = 0.0
+var last_landing_impact: float = 0.0
 var last_cut_angle: float = 0.0
 var cuts_this_play: int = 0
 
@@ -72,6 +95,9 @@ var _plant_cooldown: float = 0.0
 var _juke_vel: Vector3 = Vector3.ZERO   ## momentum from the push, scrubbed by turf
 var _juke_timer: float = 0.0
 var _juke_cooldown: float = 0.0
+var _landing_timer: float = 0.0
+var _hurdle_cooldown: float = 0.0
+var _air_time: float = 0.0
 var _prev_move_dir: Vector3 = Vector3.ZERO
 @onready var _visual: Node3D = get_node_or_null("Visual") as Node3D
 
@@ -95,10 +121,13 @@ func _physics_process(delta: float) -> void:
 	var wish := _read_input() if is_user_controlled else Vector3.ZERO
 	if _juke_timer > 0.0:
 		wish *= JUKE_STEER_LOCK
+	if _landing_timer > 0.0:
+		wish *= HURDLE_LANDING_STEER
 
 	_tick_timers(delta)
 	_handle_spin_input(delta, _self_velocity(), wish)
 	_handle_juke_input()
+	_handle_hurdle_input()
 
 	# Derive the force budget AFTER the timers and the move inputs, so a juke that
 	# just fired is already subtracted out of the budget it was paid from.
@@ -123,10 +152,15 @@ func _physics_process(delta: float) -> void:
 	velocity.x = current.x + burst.x
 	velocity.z = current.z + burst.z
 
-	if not is_on_floor():
+	var was_on_floor := is_on_floor()
+	if not was_on_floor:
 		velocity += PhysicsManager.gravity_vector() * delta
+	# Capture the downward speed before the solver can zero it on contact.
+	var fall_speed := maxf(-velocity.y, 0.0)
 
 	move_and_slide()
+
+	_update_air_state(was_on_floor, fall_speed, delta)
 
 	# Lean the body into travel. Turn rate comes from agility (3-cone/shuttle).
 	# Facing chases the feet, not the juke slide: a juke is supposed to keep your
@@ -146,6 +180,9 @@ func _physics_process(delta: float) -> void:
 	if _visual != null:
 		_visual.rotation.y = atan2(-facing.x, -facing.z)
 		_visual.rotation.z = -lean * MAX_LEAN
+		_visual.rotation.x = -air_pitch * AIR_PITCH
+		# Tuck: the mesh compresses toward its own centre, so the feet come up.
+		_visual.scale = Vector3(1.0, lerpf(1.0, 0.90, air_pitch), 1.0)
 
 	# Physical cost of the effort actually exerted this frame.
 	var load := travel.length() / maxf(measurables.top_speed_mps, 0.1) * effort
@@ -168,6 +205,14 @@ func _resolve_movement(
 	traction: float,
 	delta: float
 ) -> Vector3:
+	if not is_on_floor():
+		# Nothing to plant against. You can nudge your line in the air; you cannot
+		# cut, brake or accelerate. Whatever momentum you jumped with is what you
+		# land with, minus the air you spent.
+		if wish == Vector3.ZERO:
+			return current
+		return current.move_toward(wish * max_speed, measurables.accel_mps2 * HURDLE_AIR_STEER * delta)
+
 	if wish == Vector3.ZERO:
 		var decel := measurables.decel_mps2 * traction
 		return current.move_toward(Vector3.ZERO, decel * delta)
@@ -223,7 +268,7 @@ func _begin_cut(angle: float, agility: float, traction: float) -> void:
 	cut_performed.emit(angle, speed - Vector3(velocity.x, 0.0, velocity.z).length())
 
 func _handle_spin_input(delta: float, current: Vector3, wish: Vector3) -> void:
-	if _spin_cooldown > 0.0 or is_spinning:
+	if _spin_cooldown > 0.0 or is_spinning or not is_on_floor():
 		return
 	if not Input.is_action_just_pressed("spin"):
 		return
@@ -240,11 +285,15 @@ func _handle_spin_input(delta: float, current: Vector3, wish: Vector3) -> void:
 	is_spinning = true
 	_spin_timer = SPIN_DURATION
 	spin_charge = 1.0
-	velocity.x *= 1.0 - SPIN_SPEED_COST
-	velocity.z *= 1.0 - SPIN_SPEED_COST
-	# Carry the juke burst through the same cost so velocity stays consistent.
-	_juke_vel *= 1.0 - SPIN_SPEED_COST
+	_scale_drive(1.0 - SPIN_SPEED_COST)
 	spin_started.emit(int(_spin_sign))
+
+## Apply a multiplicative cost to everything the body is carrying. Callers that
+## re-cost velocity must route through this so the juke burst stays in sync.
+func _scale_drive(f: float) -> void:
+	velocity.x *= f
+	velocity.z *= f
+	_juke_vel *= f
 
 func _tick_timers(delta: float) -> void:
 	if _plant_cooldown > 0.0:
@@ -255,6 +304,12 @@ func _tick_timers(delta: float) -> void:
 			is_planting = false
 	if _juke_cooldown > 0.0:
 		_juke_cooldown -= delta
+	if _hurdle_cooldown > 0.0:
+		_hurdle_cooldown -= delta
+	if _landing_timer > 0.0:
+		_landing_timer -= delta
+		if _landing_timer <= 0.0:
+			is_landing = false
 	if _juke_timer > 0.0:
 		_juke_timer -= delta
 		if _juke_timer <= 0.0:
@@ -297,7 +352,7 @@ func _handle_juke_input() -> void:
 ## Push off the outside foot. Public because AI, coach mode and sim must all use
 ## the same move the player does. Returns false when the body could not do it.
 func perform_juke(direction: int) -> bool:
-	if direction == 0 or is_spinning or is_juking:
+	if direction == 0 or is_spinning or is_juking or is_landing:
 		return false
 	if _juke_cooldown > 0.0 or not is_on_floor():
 		return false
@@ -325,6 +380,65 @@ func perform_juke(direction: int) -> bool:
 	last_juke_direction = direction
 	juke_performed.emit(direction)
 	return true
+
+func _handle_hurdle_input() -> void:
+	if not is_user_controlled:
+		return
+	if Input.is_action_just_pressed("hurdle"):
+		perform_hurdle()
+
+## Leave the turf. Returns false if the body is not in a position to jump.
+##
+## There is no "hurdle over defender" check here and there never will be: the
+## leap is a real impulse, so clearing a diving arm is decided by your clearance
+## versus his height and by where the two of you actually are when he arrives.
+func perform_hurdle() -> bool:
+	if not is_on_floor() or is_spinning or is_landing:
+		return false
+	if _hurdle_cooldown > 0.0:
+		return false
+
+	var g := absf(PhysicsManager.gravity_vector().y)
+	var clearance := (measurables.vertical_jump_cm / 100.0) * HURDLE_CLEARANCE_SCALE
+	velocity.y = sqrt(2.0 * maxf(g, 0.1) * clearance)
+	_scale_drive(HURDLE_DRIVE_COST)
+
+	_hurdle_cooldown = HURDLE_COOLDOWN
+	_plant_timer = 0.0
+	is_planting = false
+	air_pitch = 0.0
+	last_jump_clearance = clearance
+	last_air_time = 0.0
+	_air_time = 0.0
+	hurdled.emit(clearance)
+	return true
+
+## Tracks flight and turns touch-down into a real cost. The impact is whatever
+## downward speed the body actually carried into the turf, so a hop landing on
+## the run is cheap and a long jump landing flat-footed is not.
+func _update_air_state(was_on_floor: bool, fall_speed: float, delta: float) -> void:
+	var on_floor := is_on_floor()
+	is_airborne = not on_floor
+	if on_floor:
+		if not was_on_floor:
+			last_air_time = _air_time
+			_air_time = 0.0
+			if fall_speed > 0.8:
+				_land(fall_speed)
+		air_pitch = lerpf(air_pitch, 0.0, clampf(delta * 14.0, 0.0, 1.0))
+	else:
+		_air_time += delta
+		air_pitch = lerpf(air_pitch, 1.0, clampf(delta * 12.0, 0.0, 1.0))
+
+func _land(impact: float) -> void:
+	last_landing_impact = impact
+	var cost := clampf(impact * HURDLE_LANDING_SPEED_COST, 0.0, 0.30)
+	_scale_drive(1.0 - cost)
+	_landing_timer = clampf(
+		HURDLE_LANDING_BASE + impact * HURDLE_LANDING_PER_MPS,
+		HURDLE_LANDING_BASE, 0.35)
+	is_landing = true
+	landed.emit(impact, cost)
 
 ## Roll the body toward the direction the feet are actually sliding.
 func _update_lean(travel: Vector3, max_speed: float, delta: float) -> void:

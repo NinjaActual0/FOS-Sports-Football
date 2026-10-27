@@ -14,6 +14,7 @@ const GLYPHS := {
 		"sprint": "Shift",
 		"spin": "Q",
 		"juke": "J / L",
+		"hurdle": "Space",
 		"pass": "LMB",
 		"tackle": "F",
 	},

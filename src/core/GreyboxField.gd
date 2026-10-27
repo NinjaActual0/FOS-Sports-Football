@@ -17,6 +17,7 @@ var _last_cut := 0.0
 var _last_cut_loss := 0.0
 var _last_cut_age := 99.0
 var _last_juke_age := 99.0
+var _last_jump_age := 99.0
 
 func _ready() -> void:
 	player.is_user_controlled = true
@@ -29,6 +30,7 @@ func _ready() -> void:
 	player.cut_performed.connect(_on_cut)
 	player.spin_started.connect(_on_spin)
 	player.juke_performed.connect(_on_juke)
+	player.hurdled.connect(_on_hurdled)
 	InputManager.device_changed.connect(func(_g, _c): _refresh_hint())
 	_refresh_hint()
 
@@ -134,11 +136,16 @@ func _process(delta: float) -> void:
 	camera.look_at(focus + Vector3.UP * 1.2, Vector3.UP)
 	_last_cut_age += delta
 	_last_juke_age += delta
+	_last_jump_age += delta
 	_update_state_visual()
 	_update_readout()
 
 func _update_state_visual() -> void:
-	if player.is_spinning:
+	if player.is_airborne:
+		_mat.albedo_color = Color(0.72, 0.80, 1.00)
+	elif player.is_landing:
+		_mat.albedo_color = Color(0.95, 0.62, 0.30)
+	elif player.is_spinning:
 		_mat.albedo_color = Color(0.30, 0.80, 0.95)
 	elif player.is_juking:
 		_mat.albedo_color = Color(0.55, 0.95, 0.55)
@@ -156,6 +163,9 @@ func _on_spin(_direction: int) -> void:
 
 func _on_juke(_direction: int) -> void:
 	_last_juke_age = 0.0
+
+func _on_hurdled(_clearance: float) -> void:
+	_last_jump_age = 0.0
 
 func _refresh_hint() -> void:
 	hint.visible = not InputManager.has_gamepad()
@@ -181,7 +191,11 @@ func _update_readout() -> void:
 		cut_line = "cut: %.0f°   speed lost: %.1f mph" % [_last_cut, 0.0]
 
 	var state := "grounded"
-	if player.is_spinning:
+	if player.is_airborne:
+		state = "AIRBORNE"
+	elif player.is_landing:
+		state = "LANDING"
+	elif player.is_spinning:
 		state = "SPINNING"
 	elif player.is_juking:
 		state = "JUKING"
@@ -192,13 +206,20 @@ func _update_readout() -> void:
 	if _last_juke_age < 1.0:
 		juke_line = "left" if player.last_juke_direction < 0 else "right"
 
+	var jump_line := "jump: —   (vertical %.0f cm   ≈ %.2f m at a run)" % [
+		m.vertical_jump_cm, (m.vertical_jump_cm / 100.0) * PlayerEntity.HURDLE_CLEARANCE_SCALE]
+	if _last_jump_age < 5.0:
+		jump_line = "jump: %.2f m clearance   %.2fs air   landing %.1f m/s" % [
+			player.last_jump_clearance, player.last_air_time, player.last_landing_impact]
+
 	readout.text = "\n".join([
 		"FOS Sports Football — greybox",
-		"move %s    sprint %s    spin %s    juke %s" % [
+		"move %s    sprint %s    spin %s    juke %s    hurdle %s" % [
 			InputManager.glyph("move"),
 			InputManager.glyph("sprint"),
 			InputManager.glyph("spin"),
 			InputManager.glyph("juke"),
+			InputManager.glyph("hurdle"),
 		],
 		"",
 		"40: %.2fs   10-split: %.2fs   3-cone: %.2fs" % [m.forty_yard_s, m.ten_yard_split_s, m.three_cone_s],
@@ -207,6 +228,7 @@ func _update_readout() -> void:
 		"",
 		"speed: %.1f mph   stamina: %.0f%%   traction: %.2f" % [player.speed_mph(), h.stamina * 100.0, EnvironmentManager.traction],
 		"state: %-9s %s   cuts: %d   juke: %s" % [state, cut_line, player.cuts_this_play, juke_line],
+		jump_line,
 		"spot: %d-yard line   yard grid (F1): %s" % [
 			FieldMarkings.yard_line_at(player.global_position.z),
 			"on" if markings.is_grid_visible() else "off",
@@ -216,4 +238,5 @@ func _update_readout() -> void:
 		"try: sprint straight, then slam a hard left at full speed.",
 		"try: sprint, then flick the right stick — you slide sideways but keep your drive.",
 		"try: sprint, then spin — you keep momentum but lose your steer.",
+		"try: sprint, then jump — your line is decided the moment your feet leave the turf.",
 	])
