@@ -69,15 +69,18 @@ const AIR_PITCH := 0.34                ## radians the body tilts forward in flig
 ## the slide is turf friction acting on the momentum you actually carried in.
 const DIVE_PUSH_MPS := 1.2             ## extra forward speed the push adds
 const DIVE_MIN_LAUNCH := 4.0           ## a dive from a standstill is still a lunge
-const DIVE_LIFT_MPS := 1.4             ## just enough to leave the ground
+const DIVE_LIFT_MPS := 2.1             ## a real hop, not a shuffle: ~0.22 m of rise
 const DIVE_SLIDE_FRICTION := 11.0      ## pads digging into turf
-const DIVE_SLIDE_MAX_TIME := 0.32
+const DIVE_SLIDE_MAX_TIME := 0.20
 const DIVE_SLIDE_END_SPEED := 2.5
 const DIVE_GETUP_TIME := 0.45
 const DIVE_GETUP_FRICTION := 30.0      ## hands plant, feet come back under you
 const DIVE_COOLDOWN := 0.20
 const DIVE_PITCH_RAD := 1.50           ## ~86 degrees: body flat, not head-first
-const DIVE_PITCH_RATE := 12.0
+const DIVE_PITCH_RATE := 12.0          ## once the body is on the ground
+const DIVE_AIR_PITCH_RATE := 6.5       ## in flight: rotate across the whole hop
+const DIVE_GETUP_PITCH_RATE := 7.0     ## stand up over the recovery, not instantly
+const DIVE_LAND_BLEND := 0.12          ## seconds to settle the mesh onto the turf
 
 @export var measurables: PlayerMeasurables
 @export var player_id: String = ""
@@ -122,6 +125,7 @@ var _landing_timer: float = 0.0
 var _hurdle_cooldown: float = 0.0
 var _air_time: float = 0.0
 var _dive_pitch: float = 0.0
+var _dive_ground_blend: float = 0.0
 var _dive_timer: float = 0.0
 var _dive_air_timer: float = 0.0
 var _dive_cooldown: float = 0.0
@@ -242,9 +246,13 @@ func _physics_process(delta: float) -> void:
 		var hurdle_pitch := air_pitch * AIR_PITCH
 		var dive_angle := _dive_pitch * DIVE_PITCH_RAD
 		_visual.rotation.x = -maxf(hurdle_pitch, dive_angle)
-		# A body lying down has its centre only a radius off the turf, so the mesh
-		# drops as it tips. Without this the capsule hovers through the slide.
-		_visual.position = Vector3(0.0, _dive_visual_drop(dive_angle), 0.0)
+		# In flight the mesh rides with the body so the hop is actually visible.
+		# It settles onto the turf only once the body starts coming down - pinning
+		# it to the ground the whole time made the dive look like a bow.
+		var rising := dive_phase == DivePhase.AIR and velocity.y > 0.0
+		_dive_ground_blend = move_toward(_dive_ground_blend, 0.0 if rising else 1.0,
+			delta / DIVE_LAND_BLEND)
+		_visual.position = Vector3(0.0, _dive_visual_drop(dive_angle) * _dive_ground_blend, 0.0)
 		# Tuck: the mesh compresses toward its own centre, so the feet come up.
 		var tuck := 1.0 if dive_phase != DivePhase.NONE else lerpf(1.0, 0.90, air_pitch)
 		_visual.scale = Vector3(1.0, tuck, 1.0)
@@ -545,6 +553,7 @@ func perform_dive() -> bool:
 	is_planting = false
 	air_pitch = 0.0
 	_dive_pitch = 0.0
+	_dive_ground_blend = 0.0
 	_dive_timer = 0.0
 	_dive_air_timer = 0.0
 	_dive_start_pos = global_position
@@ -608,7 +617,12 @@ func _update_dive(delta: float) -> void:
 			if _dive_timer >= DIVE_GETUP_TIME:
 				_finish_dive()
 
-	_dive_pitch = lerpf(_dive_pitch, target_pitch, clampf(delta * DIVE_PITCH_RATE, 0.0, 1.0))
+	var rate := DIVE_PITCH_RATE
+	if dive_phase == DivePhase.AIR:
+		rate = DIVE_AIR_PITCH_RATE
+	elif dive_phase == DivePhase.GETUP:
+		rate = DIVE_GETUP_PITCH_RATE
+	_dive_pitch = lerpf(_dive_pitch, target_pitch, clampf(delta * rate, 0.0, 1.0))
 
 func _finish_dive() -> void:
 	_set_dive_shape(false)

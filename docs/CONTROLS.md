@@ -83,9 +83,12 @@ standing capsule tipped over. The origin never moves — the collision shape is 
 standing back up can never pop the player out of the turf.
 
 The launch is momentum plus a push, with a floor so that a dive from a standstill is still a
-lunge. In the air there is no control at all: the arc is whatever you left with. Touchdown is not
-a landing; the slide is priced by turf friction acting on the momentum you actually carried in,
-which is why a dive at full speed covers far less ground than running would over the same beat.
+lunge. It is a real hop — about a quarter of a metre of rise, with the body rotating through
+the flight and only settling onto the turf on the way down, so the arc reads as travel rather
+than as the body tipping over in place. In the air there is no control at all: the arc is
+whatever you left with. Touchdown is not a landing; the slide is priced by turf friction acting
+on the momentum you actually carried in, which is why a dive at full speed covers far less
+ground than running would over the same beat.
 
 Then you get up. That is the cost, and it is the whole cost: roughly a second from takeoff to
 being a runner again at full speed, and about four fifths of a second from a jog, during which
