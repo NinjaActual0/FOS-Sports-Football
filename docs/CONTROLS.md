@@ -17,7 +17,7 @@ events, not button-triggered animation states.
 | Sprint | RT | R2 | Shift | Done |
 | Spin | B | Circle | Q | Done |
 | Cut / plant | Left stick, sharp | Left stick, sharp | WASD, sharp | Done (emergent) |
-| Juke | Right stick L/R | Right stick L/R | — | Planned |
+| Juke | Right stick L/R | Right stick L/R | J / L | Done |
 | Stiff arm | A | Cross | — | Planned |
 | Dive | X | Square | — | Planned |
 | Hurdle | Y | Triangle | — | Planned |
@@ -38,6 +38,19 @@ That is why a good player cuts better than a bad one without any dice involved.
 Spin has a button because it is a *decision*: keep your momentum, give up your steering,
 and hope the defender's leverage breaks. It costs speed up front, locks your lateral
 acceleration for the duration, and has a cooldown.
+
+### Juke
+
+A juke has a button because it is a *commitment*, not a change of direction: you push off
+the outside foot and add sideways momentum **on top of** the speed you already have. Unlike
+a cut, your drive is not killed — the turf scrubs the sideways push away over about half a
+second. What you pay is a small forward cost, a beat where your steering is compromised, and
+a cooldown.
+
+That makes it a real choice: juke into open space and you gained a step; juke into traffic
+and you burned a beat. The physical size of the push comes from agility, and eventually the
+*deception* comes from defenders having to read your lean and momentum rather than your
+destination.
 
 ## Quarterback / passing (planned)
 

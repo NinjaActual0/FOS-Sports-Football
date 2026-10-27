@@ -16,6 +16,7 @@ var _mat: StandardMaterial3D
 var _last_cut := 0.0
 var _last_cut_loss := 0.0
 var _last_cut_age := 99.0
+var _last_juke_age := 99.0
 
 func _ready() -> void:
 	player.is_user_controlled = true
@@ -27,6 +28,7 @@ func _ready() -> void:
 	mesh.material_override = _mat
 	player.cut_performed.connect(_on_cut)
 	player.spin_started.connect(_on_spin)
+	player.juke_performed.connect(_on_juke)
 	InputManager.device_changed.connect(func(_g, _c): _refresh_hint())
 	_refresh_hint()
 
@@ -131,12 +133,15 @@ func _process(delta: float) -> void:
 	camera.global_position = camera.global_position.lerp(desired, clampf(delta * 6.0, 0.0, 1.0))
 	camera.look_at(focus + Vector3.UP * 1.2, Vector3.UP)
 	_last_cut_age += delta
+	_last_juke_age += delta
 	_update_state_visual()
 	_update_readout()
 
 func _update_state_visual() -> void:
 	if player.is_spinning:
 		_mat.albedo_color = Color(0.30, 0.80, 0.95)
+	elif player.is_juking:
+		_mat.albedo_color = Color(0.55, 0.95, 0.55)
 	elif player.is_planting:
 		_mat.albedo_color = Color(0.98, 0.82, 0.25)
 	else:
@@ -148,6 +153,9 @@ func _on_cut(angle_deg: float, speed_lost: float) -> void:
 
 func _on_spin(_direction: int) -> void:
 	pass
+
+func _on_juke(_direction: int) -> void:
+	_last_juke_age = 0.0
 
 func _refresh_hint() -> void:
 	hint.visible = not InputManager.has_gamepad()
@@ -175,15 +183,22 @@ func _update_readout() -> void:
 	var state := "grounded"
 	if player.is_spinning:
 		state = "SPINNING"
+	elif player.is_juking:
+		state = "JUKING"
 	elif player.is_planting:
 		state = "PLANTING"
 
+	var juke_line := "—"
+	if _last_juke_age < 1.0:
+		juke_line = "left" if player.last_juke_direction < 0 else "right"
+
 	readout.text = "\n".join([
 		"FOS Sports Football — greybox",
-		"move %s     sprint %s     spin %s" % [
+		"move %s    sprint %s    spin %s    juke %s" % [
 			InputManager.glyph("move"),
 			InputManager.glyph("sprint"),
 			InputManager.glyph("spin"),
+			InputManager.glyph("juke"),
 		],
 		"",
 		"40: %.2fs   10-split: %.2fs   3-cone: %.2fs" % [m.forty_yard_s, m.ten_yard_split_s, m.three_cone_s],
@@ -191,7 +206,7 @@ func _update_readout() -> void:
 		"accel: %.2f m/s²   turn: %.0f°/s   reach: %.2fm" % [m.accel_mps2, m.turn_rate_deg, m.reach_m],
 		"",
 		"speed: %.1f mph   stamina: %.0f%%   traction: %.2f" % [player.speed_mph(), h.stamina * 100.0, EnvironmentManager.traction],
-		"state: %-9s %s   cuts: %d" % [state, cut_line, player.cuts_this_play],
+		"state: %-9s %s   cuts: %d   juke: %s" % [state, cut_line, player.cuts_this_play, juke_line],
 		"spot: %d-yard line   yard grid (F1): %s" % [
 			FieldMarkings.yard_line_at(player.global_position.z),
 			"on" if markings.is_grid_visible() else "off",
@@ -199,5 +214,6 @@ func _update_readout() -> void:
 		_device_line(),
 		"",
 		"try: sprint straight, then slam a hard left at full speed.",
+		"try: sprint, then flick the right stick — you slide sideways but keep your drive.",
 		"try: sprint, then spin — you keep momentum but lose your steer.",
 	])

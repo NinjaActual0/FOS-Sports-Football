@@ -19,6 +19,7 @@ extends CharacterBody3D
 
 signal cut_performed(angle_deg: float, speed_lost: float)
 signal spin_started(direction: int)
+signal juke_performed(direction: int)
 
 const CUT_ANGLE_DEG := 32.0
 const PLANT_TIME := 0.17
@@ -27,6 +28,22 @@ const SPIN_DURATION := 0.42
 const SPIN_COOLDOWN := 0.85
 const SPIN_SPEED_COST := 0.12
 const SPIN_LATERAL_LOCK := 0.15
+
+## Juke: a push off the outside foot. Unlike a cut it does NOT kill your drive -
+## it adds sideways momentum on top of the speed you already carry, and the turf
+## scrubs that extra away over about half a second. You stay committed for a beat,
+## so a juke into traffic is a real mistake.
+const JUKE_COOLDOWN := 0.55
+const JUKE_DURATION := 0.28
+const JUKE_MIN_SPEED_FRAC := 0.35
+const JUKE_BASE_MPS := 3.4
+const JUKE_DECAY_MPS2 := 7.0
+const JUKE_FORWARD_COST := 0.94
+const JUKE_STEER_LOCK := 0.35
+
+## Body roll, purely presentational, but it is the cue a defender will read later.
+const MAX_LEAN := 0.30
+const LEAN_RESPONSE := 9.0
 
 @export var measurables: PlayerMeasurables
 @export var player_id: String = ""
@@ -41,6 +58,9 @@ var is_spinning: bool = false
 var spin_charge: float = 1.0        ## 1 = fully effective, decays toward 0 while spinning
 var is_planting: bool = false
 var plant_charge: float = 1.0       ## how well the foot is set during a cut
+var is_juking: bool = false
+var last_juke_direction: int = 0    ## -1 left, +1 right
+var lean: float = 0.0               ## -1 = rolled left, +1 = rolled right
 var last_cut_angle: float = 0.0
 var cuts_this_play: int = 0
 
@@ -49,6 +69,9 @@ var _spin_cooldown: float = 0.0
 var _spin_sign: float = 1.0
 var _plant_timer: float = 0.0
 var _plant_cooldown: float = 0.0
+var _juke_vel: Vector3 = Vector3.ZERO   ## momentum from the push, scrubbed by turf
+var _juke_timer: float = 0.0
+var _juke_cooldown: float = 0.0
 var _prev_move_dir: Vector3 = Vector3.ZERO
 @onready var _visual: Node3D = get_node_or_null("Visual") as Node3D
 
@@ -66,12 +89,22 @@ func _physics_process(delta: float) -> void:
 	if is_user_controlled and Input.is_action_pressed("sprint"):
 		max_speed *= sprint_mult
 
-	var current := Vector3(velocity.x, 0.0, velocity.z)
-	var speed := current.length()
+	# The juke burst is momentum the feet did not have to earn this frame, so it
+	# rides on top of the force budget instead of being clamped by it. Invariant:
+	# velocity.xz == self-powered velocity + _juke_vel, at all times.
 	var wish := _read_input() if is_user_controlled else Vector3.ZERO
+	if _juke_timer > 0.0:
+		wish *= JUKE_STEER_LOCK
 
 	_tick_timers(delta)
-	_handle_spin_input(delta, current, wish)
+	_handle_spin_input(delta, _self_velocity(), wish)
+	_handle_juke_input()
+
+	# Derive the force budget AFTER the timers and the move inputs, so a juke that
+	# just fired is already subtracted out of the budget it was paid from.
+	var burst := _juke_vel
+	var current := _self_velocity()
+	var speed := current.length()
 
 	# ---- Spin: momentum is preserved, steering is not --------------------
 	if is_spinning:
@@ -87,8 +120,8 @@ func _physics_process(delta: float) -> void:
 	else:
 		current = _resolve_movement(current, speed, wish, max_speed, health, traction, delta)
 
-	velocity.x = current.x
-	velocity.z = current.z
+	velocity.x = current.x + burst.x
+	velocity.z = current.z + burst.z
 
 	if not is_on_floor():
 		velocity += PhysicsManager.gravity_vector() * delta
@@ -96,20 +129,32 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 	# Lean the body into travel. Turn rate comes from agility (3-cone/shuttle).
+	# Facing chases the feet, not the juke slide: a juke is supposed to keep your
+	# shoulders square while your feet go sideways, which is what a defender has
+	# to read.
 	var travel := Vector3(velocity.x, 0.0, velocity.z)
-	if travel.length() > 0.15:
+	var steer := _self_velocity()
+	if steer.length() > 0.15:
 		var turn := deg_to_rad(measurables.turn_rate_deg * (0.6 if is_spinning else 1.0))
-		facing = facing.slerp(travel.normalized(), clampf(turn * delta, 0.0, 1.0))
+		facing = facing.slerp(steer.normalized(), clampf(turn * delta, 0.0, 1.0))
+
+	_update_lean(travel, max_speed, delta)
 
 	# Point the visual body where the player is actually facing. This is purely
 	# presentational - the capsule is radially symmetric, so the greybox adds a
 	# shoulder bar and a floating chevron to make the front readable.
 	if _visual != null:
 		_visual.rotation.y = atan2(-facing.x, -facing.z)
+		_visual.rotation.z = -lean * MAX_LEAN
 
 	# Physical cost of the effort actually exerted this frame.
 	var load := travel.length() / maxf(measurables.top_speed_mps, 0.1) * effort
 	HealthManager.exert(player_id, load, delta)
+
+## Velocity the feet are actually driving, i.e. everything except the decaying
+## sideways push from a juke.
+func _self_velocity() -> Vector3:
+	return Vector3(velocity.x - _juke_vel.x, 0.0, velocity.z - _juke_vel.z)
 
 ## Core force budget. Splits the desired velocity into the component along the
 ## player's momentum and the component lateral to it, then limits each by what
@@ -197,6 +242,8 @@ func _handle_spin_input(delta: float, current: Vector3, wish: Vector3) -> void:
 	spin_charge = 1.0
 	velocity.x *= 1.0 - SPIN_SPEED_COST
 	velocity.z *= 1.0 - SPIN_SPEED_COST
+	# Carry the juke burst through the same cost so velocity stays consistent.
+	_juke_vel *= 1.0 - SPIN_SPEED_COST
 	spin_started.emit(int(_spin_sign))
 
 func _tick_timers(delta: float) -> void:
@@ -206,6 +253,23 @@ func _tick_timers(delta: float) -> void:
 		_plant_timer -= delta
 		if _plant_timer <= 0.0:
 			is_planting = false
+	if _juke_cooldown > 0.0:
+		_juke_cooldown -= delta
+	if _juke_timer > 0.0:
+		_juke_timer -= delta
+		if _juke_timer <= 0.0:
+			is_juking = false
+	if _juke_vel.length_squared() > 0.0001:
+		if is_on_floor():
+			# Turf friction eats the push. Nothing outlives ~0.5 s.
+			var before := _juke_vel
+			var decay := JUKE_DECAY_MPS2 * EnvironmentManager.traction
+			_juke_vel = _juke_vel.move_toward(Vector3.ZERO, decay * delta)
+			# Scrub the same amount off the real velocity so the two stay in sync.
+			velocity.x -= before.x - _juke_vel.x
+			velocity.z -= before.z - _juke_vel.z
+	else:
+		_juke_vel = Vector3.ZERO
 	if is_spinning:
 		_spin_timer -= delta
 		if _spin_timer <= 0.0:
@@ -214,6 +278,58 @@ func _tick_timers(delta: float) -> void:
 			_spin_cooldown = SPIN_COOLDOWN
 	elif _spin_cooldown > 0.0:
 		_spin_cooldown -= delta
+
+func _handle_juke_input() -> void:
+	if not is_user_controlled or is_spinning:
+		return
+	if Input.is_action_just_pressed("juke_left"):
+		perform_juke(-1)
+	elif Input.is_action_just_pressed("juke_right"):
+		perform_juke(1)
+
+## Push off the outside foot. Public because AI, coach mode and sim must all use
+## the same move the player does. Returns false when the body could not do it.
+func perform_juke(direction: int) -> bool:
+	if direction == 0 or is_spinning or is_juking:
+		return false
+	if _juke_cooldown > 0.0 or not is_on_floor():
+		return false
+
+	var carried := Vector3(velocity.x - _juke_vel.x, 0.0, velocity.z - _juke_vel.z)
+	if carried.length() < measurables.top_speed_mps * JUKE_MIN_SPEED_FRAC:
+		return false  # you cannot juke out of a standstill
+
+	var agility := clampf(measurables.turn_rate_deg / 200.0, 0.8, 1.25)
+	var right := facing.cross(Vector3.UP)
+	if right.length_squared() < 0.0001:
+		right = Vector3.RIGHT
+	right = right.normalized()
+
+	# Weight transfer costs a little drive before the push lands. The push is added
+	# to _juke_vel first so velocity and the burst never disagree about who owns
+	# the sideways momentum - callers may invoke this outside _physics_process.
+	_juke_vel += right * float(direction) * JUKE_BASE_MPS * agility
+	velocity.x = carried.x * JUKE_FORWARD_COST + _juke_vel.x
+	velocity.z = carried.z * JUKE_FORWARD_COST + _juke_vel.z
+
+	is_juking = true
+	_juke_timer = JUKE_DURATION
+	_juke_cooldown = JUKE_COOLDOWN
+	last_juke_direction = direction
+	juke_performed.emit(direction)
+	return true
+
+## Roll the body toward the direction the feet are actually sliding.
+func _update_lean(travel: Vector3, max_speed: float, delta: float) -> void:
+	var right := facing.cross(Vector3.UP)
+	if right.length_squared() < 0.0001:
+		return
+	var lateral := travel.dot(right.normalized())
+	var ratio := clampf(lateral / maxf(max_speed, 1.0), -1.0, 1.0)
+	# Square-root curve so a 20-25 degree juke still reads as a lean instead of
+	# vanishing into rounding error on a greybox capsule.
+	var target := signf(ratio) * sqrt(absf(ratio))
+	lean = lerpf(lean, target, clampf(delta * LEAN_RESPONSE, 0.0, 1.0))
 
 func _read_input() -> Vector3:
 	var v := Input.get_vector("move_left", "move_right", "move_forward", "move_backward")

@@ -13,6 +13,7 @@ const GLYPHS := {
 		"move": "WASD",
 		"sprint": "Shift",
 		"spin": "Q",
+		"juke": "J / L",
 		"pass": "LMB",
 		"tackle": "F",
 	},
