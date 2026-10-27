@@ -103,7 +103,7 @@ func _physics_process(delta: float) -> void:
 
 	# Point the visual body where the player is actually facing. This is purely
 	# presentational - the capsule is radially symmetric, so the greybox adds a
-	# shoulder bar and a ground chevron to make the front readable.
+	# shoulder bar and a floating chevron to make the front readable.
 	if _visual != null:
 		_visual.rotation.y = atan2(-facing.x, -facing.z)
 
