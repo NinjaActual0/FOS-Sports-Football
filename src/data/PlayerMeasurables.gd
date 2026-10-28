@@ -1,11 +1,11 @@
-﻿@tool
+@tool
 class_name PlayerMeasurables
 extends Resource
 ## Real-world combine measurables. Every gameplay trait is *derived* from these,
 ## so two players with different bodies genuinely move differently.
 
-@export var position: String = "ATH"
-@export var handedness: String = "R"
+@export var position: PlayerPosition.PlayerPosition = PlayerPosition.PlayerPosition.RB
+@export var handedness: PlayerHandedness.PlayerHandedness = PlayerHandedness.PlayerHandedness.RIGHT
 
 @export_group("Anthropometrics")
 @export var height_cm: float = 185.0

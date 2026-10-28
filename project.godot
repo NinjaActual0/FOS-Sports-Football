@@ -34,6 +34,10 @@ HealthManager="*res://src/core/HealthManager.gd"
 window/size/viewport_width=1280
 window/size/viewport_height=720
 
+[dotnet]
+
+project/assembly_name="FOS Sports Football"
+
 [input]
 
 move_forward={
