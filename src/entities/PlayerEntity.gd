@@ -82,6 +82,21 @@ const DIVE_AIR_PITCH_RATE := 6.5       ## in flight: rotate across the whole hop
 const DIVE_GETUP_PITCH_RATE := 7.0     ## stand up over the recovery, not instantly
 const DIVE_LAND_BLEND := 0.12          ## seconds to settle the mesh onto the turf
 
+## Slide (QB): feet-first, protective. Same button as the dive.
+const SLIDE_PUSH_MPS := 0.6
+const SLIDE_LIFT_MPS := 0.9
+const SLIDE_SLIDE_FRICTION := 16.0
+const SLIDE_SLIDE_MAX_TIME := 0.16
+const SLIDE_SLIDE_END_SPEED := 1.8
+const SLIDE_GETUP_TIME := 0.28
+const SLIDE_GETUP_FRICTION := 36.0
+const SLIDE_COOLDOWN := 0.16
+const SLIDE_PITCH_RAD := 0.9
+const SLIDE_PITCH_RATE := 14.0
+const SLIDE_AIR_PITCH_RATE := 9.0
+const SLIDE_MIN_SPEED := 2.0
+const SLIDE_MIN_LAUNCH := 3.2
+
 @export var measurables: PlayerMeasurables
 @export var player_id: String = ""
 @export var is_user_controlled: bool = false
@@ -109,7 +124,9 @@ var cuts_this_play: int = 0
 
 ## Dive phases. The body is on the ground for all of them; only AIR has it off.
 enum DivePhase { NONE, AIR, SLIDE, GETUP }
+enum DiveType { NONE, DIVE, SLIDE }
 var dive_phase: int = DivePhase.NONE
+var dive_type: int = DiveType.NONE
 var dive_distance: float = 0.0
 var last_dive_distance: float = 0.0
 
@@ -244,8 +261,11 @@ func _physics_process(delta: float) -> void:
 		# Two things can tip the body: a hurdle's forward lean, or a dive that
 		# puts it flat. They never stack - the larger pose wins.
 		var hurdle_pitch := air_pitch * AIR_PITCH
-		var dive_angle := _dive_pitch * DIVE_PITCH_RAD
-		_visual.rotation.x = -maxf(hurdle_pitch, dive_angle)
+		var dive_angle := _dive_pitch * (SLIDE_PITCH_RAD if dive_type == DiveType.SLIDE else DIVE_PITCH_RAD)
+		var tilt := -maxf(hurdle_pitch, dive_angle)
+		if dive_type == DiveType.SLIDE:
+			tilt = maxf(-hurdle_pitch, _dive_pitch * 0.25)
+		_visual.rotation.x = tilt
 		# In flight the mesh rides with the body so the hop is actually visible.
 		# It settles onto the turf only once the body starts coming down - pinning
 		# it to the ground the whole time made the dive look like a bow.
@@ -522,7 +542,19 @@ func _handle_dive_input() -> void:
 	if not is_user_controlled:
 		return
 	if Input.is_action_just_pressed("dive"):
-		perform_dive()
+		var sprinting := Input.is_action_pressed("sprint")
+		var base := Vector3(velocity.x, 0.0, velocity.z)
+		var going := base.length() >= SLIDE_MIN_SPEED
+		print("DIVE: sprint=", sprinting, " speed=", base.length(), " going=", going)
+		if sprinting and going:
+			print("-> DIVE")
+			perform_dive()
+		elif going:
+			print("-> SLIDE")
+			perform_slide()
+		else:
+			print("-> DIVE (stand)")
+			perform_dive()
 
 ## Leave your feet. Public for the same reason the juke is: a defender's dive
 ## tackle has to be the identical move, not a separate animation.
@@ -558,6 +590,37 @@ func perform_dive() -> bool:
 	_dive_air_timer = 0.0
 	_dive_start_pos = global_position
 	dive_phase = DivePhase.AIR
+	dive_type = DiveType.DIVE
+	_set_dive_shape(true)
+	return true
+
+func perform_slide() -> bool:
+	if not is_on_floor() or is_spinning or is_landing:
+		return false
+	if dive_phase != DivePhase.NONE or _dive_cooldown > 0.0:
+		return false
+	var base := Vector3(velocity.x, 0.0, velocity.z)
+	var speed := base.length()
+	if speed < SLIDE_MIN_SPEED:
+		return false
+	var dir := base.normalized()
+	if dir.length_squared() < 0.0001:
+		dir = facing
+	_juke_vel = Vector3.ZERO
+	var launch := maxf(speed + SLIDE_PUSH_MPS, SLIDE_MIN_LAUNCH)
+	velocity.x = dir.x * launch
+	velocity.z = dir.z * launch
+	velocity.y = SLIDE_LIFT_MPS
+	_plant_timer = 0.0
+	is_planting = false
+	air_pitch = 0.0
+	_dive_pitch = 0.0
+	_dive_ground_blend = 0.0
+	_dive_timer = 0.0
+	_dive_air_timer = 0.0
+	_dive_start_pos = global_position
+	dive_phase = DivePhase.AIR
+	dive_type = DiveType.SLIDE
 	_set_dive_shape(true)
 	return true
 
@@ -593,50 +656,69 @@ func _update_dive(delta: float) -> void:
 		dive_distance = 0.0
 		return
 
-	dive_distance = Vector2(
-		global_position.x - _dive_start_pos.x,
-		global_position.z - _dive_start_pos.z).length()
+	dive_distance = Vector2(global_position.x - _dive_start_pos.x, global_position.z - _dive_start_pos.z).length()
 	_dive_timer += delta
 
-	var target_pitch := 1.0
+	var slide_max := DIVE_SLIDE_MAX_TIME
+	var slide_end := DIVE_SLIDE_END_SPEED
+	var getup_time := DIVE_GETUP_TIME
+	var air_rate := DIVE_AIR_PITCH_RATE
+	var pitch_rate := DIVE_PITCH_RATE
+	var getup_rate := DIVE_GETUP_PITCH_RATE
+	var target_pitch_rad := DIVE_PITCH_RAD
+	if dive_type == DiveType.SLIDE:
+		slide_max = SLIDE_SLIDE_MAX_TIME
+		slide_end = SLIDE_SLIDE_END_SPEED
+		getup_time = SLIDE_GETUP_TIME
+		air_rate = SLIDE_AIR_PITCH_RATE
+		pitch_rate = SLIDE_PITCH_RATE
+		getup_rate = SLIDE_PITCH_RATE
+		target_pitch_rad = SLIDE_PITCH_RAD
+
 	match dive_phase:
 		DivePhase.AIR:
 			_dive_air_timer += delta
-			# Wait out the launch so the body is not "on the floor" on frame one.
 			if is_on_floor() and _dive_air_timer > 0.04:
 				dive_phase = DivePhase.SLIDE
 				_dive_timer = 0.0
 		DivePhase.SLIDE:
 			_update_dive_shape_yaw()
-			if _dive_timer > DIVE_SLIDE_MAX_TIME \
-					or _self_velocity().length() < DIVE_SLIDE_END_SPEED:
+			if _dive_timer > slide_max or _self_velocity().length() < slide_end:
 				dive_phase = DivePhase.GETUP
 				_dive_timer = 0.0
 		DivePhase.GETUP:
-			target_pitch = 0.0
-			if _dive_timer >= DIVE_GETUP_TIME:
+			target_pitch_rad = 0.0
+			if _dive_timer >= getup_time:
 				_finish_dive()
 
-	var rate := DIVE_PITCH_RATE
-	if dive_phase == DivePhase.AIR:
-		rate = DIVE_AIR_PITCH_RATE
-	elif dive_phase == DivePhase.GETUP:
-		rate = DIVE_GETUP_PITCH_RATE
-	_dive_pitch = lerpf(_dive_pitch, target_pitch, clampf(delta * rate, 0.0, 1.0))
+	var rate := pitch_rate
+	var target_norm := 1.0
+	if dive_phase == DivePhase.GETUP:
+		rate = getup_rate
+		target_norm = 0.0
+	elif dive_phase == DivePhase.AIR:
+		rate = air_rate
+		target_norm = target_pitch_rad / DIVE_PITCH_RAD
+	else:
+		target_norm = target_pitch_rad / DIVE_PITCH_RAD
+	_dive_pitch = lerpf(_dive_pitch, target_norm, clampf(delta * rate, 0.0, 1.0))
 
 func _finish_dive() -> void:
+	var was_slide := dive_type == DiveType.SLIDE
 	_set_dive_shape(false)
 	dive_phase = DivePhase.NONE
-	_dive_cooldown = DIVE_COOLDOWN
+	dive_type = DiveType.NONE
+	_dive_cooldown = SLIDE_COOLDOWN if was_slide else DIVE_COOLDOWN
 	_dive_pitch = 0.0
 	last_dive_distance = dive_distance
 	dove.emit(last_dive_distance)
 
 func _resolve_dive(current: Vector3, delta: float) -> Vector3:
-	# Airborne there is nothing to push against, so the arc is pure momentum.
 	if dive_phase == DivePhase.AIR:
 		return current
 	var friction := DIVE_GETUP_FRICTION if dive_phase == DivePhase.GETUP else DIVE_SLIDE_FRICTION
+	if dive_type == DiveType.SLIDE:
+		friction = SLIDE_GETUP_FRICTION if dive_phase == DivePhase.GETUP else SLIDE_SLIDE_FRICTION
 	return current.move_toward(Vector3.ZERO, friction * EnvironmentManager.traction * delta)
 
 ## Roll the body toward the direction the feet are actually sliding.
