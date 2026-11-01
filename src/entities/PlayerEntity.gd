@@ -91,9 +91,9 @@ const SLIDE_SLIDE_END_SPEED := 1.8
 const SLIDE_GETUP_TIME := 0.28
 const SLIDE_GETUP_FRICTION := 36.0
 const SLIDE_COOLDOWN := 0.16
-const SLIDE_PITCH_RAD := 0.9
-const SLIDE_PITCH_RATE := 14.0
-const SLIDE_AIR_PITCH_RATE := 9.0
+const SLIDE_PITCH_RAD := 1.35
+const SLIDE_PITCH_RATE := 18.0
+const SLIDE_AIR_PITCH_RATE := 11.0
 const SLIDE_MIN_SPEED := 2.0
 const SLIDE_MIN_LAUNCH := 3.2
 
@@ -264,7 +264,7 @@ func _physics_process(delta: float) -> void:
 		var dive_angle := _dive_pitch * (SLIDE_PITCH_RAD if dive_type == DiveType.SLIDE else DIVE_PITCH_RAD)
 		var tilt := -maxf(hurdle_pitch, dive_angle)
 		if dive_type == DiveType.SLIDE:
-			tilt = maxf(-hurdle_pitch, _dive_pitch * 0.25)
+			tilt = maxf(-hurdle_pitch, _dive_pitch * 0.65)
 		_visual.rotation.x = tilt
 		# In flight the mesh rides with the body so the hop is actually visible.
 		# It settles onto the turf only once the body starts coming down - pinning
@@ -542,15 +542,10 @@ func _handle_dive_input() -> void:
 	if not is_user_controlled:
 		return
 	if Input.is_action_just_pressed("dive"):
-		var sprinting := Input.is_action_pressed("sprint")
 		var base := Vector3(velocity.x, 0.0, velocity.z)
 		var going := base.length() >= SLIDE_MIN_SPEED
-		print("DIVE: sprint=", sprinting, " speed=", base.length(), " going=", going)
-		if sprinting and going:
-			print("-> DIVE")
-			perform_dive()
-		elif going:
-			print("-> SLIDE")
+		if going:
+			print("-> SLIDE (give-up)")
 			perform_slide()
 		else:
 			print("-> DIVE (stand)")
